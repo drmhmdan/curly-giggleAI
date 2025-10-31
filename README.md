@@ -60,34 +60,52 @@ GEMINI_API_KEY=your-api-key-here
 
 ## Usage
 
-1. Start the server:
+### Quick Start (Easiest)
+```bash
+./start.sh
+```
+
+The startup script will check dependencies and start the server automatically.
+
+### Manual Start
+
+**Option 1: Using Python directly**
 ```bash
 python app.py
 ```
 
-Or with uvicorn:
+**Option 2: Using uvicorn**
 ```bash
 uvicorn app:app --host 0.0.0.0 --port 8000
 ```
 
-2. Open your browser and navigate to:
+**Option 3: Using Docker**
+```bash
+docker-compose up
+```
+
+### Access the Application
+
+1. Open your browser and navigate to:
 ```
 http://localhost:8000
 ```
 
-3. Allow microphone permissions when prompted
+2. Allow microphone permissions when prompted
 
-4. Configure your settings in the left panel:
+3. Configure your settings in the left panel:
    - Select Whisper model (base recommended for balance of speed/accuracy)
    - Choose transcription language
    - Select Gemini model
    - Enable/disable auto-send
 
-5. Click "Start Recording" to begin recording audio
+4. Click "Start Recording" to begin recording audio
 
-6. Click "Stop Recording" when finished
+5. Click "Stop Recording" when finished
 
-7. View the transcription and AI response in the output panels
+6. View the transcription and AI response in the output panels
+
+For a detailed quick start guide, see [QUICKSTART.md](QUICKSTART.md).
 
 ## API Endpoints
 
@@ -139,6 +157,24 @@ Check service health and availability.
 }
 ```
 
+## Docker Deployment
+
+For easy deployment with Docker:
+
+1. Build and run with docker-compose:
+```bash
+export GEMINI_API_KEY="your-api-key-here"
+docker-compose up -d
+```
+
+2. Or build and run manually:
+```bash
+docker build -t curly-giggle-ai .
+docker run -p 8000:8000 -e GEMINI_API_KEY="your-api-key-here" curly-giggle-ai
+```
+
+3. Access the application at `http://localhost:8000`
+
 ## Technology Stack
 
 - **Backend**: FastAPI (Python)
@@ -146,6 +182,7 @@ Check service health and availability.
 - **AI**: Google Gemini API
 - **Frontend**: HTML5, CSS3, JavaScript (Vanilla)
 - **Audio**: MediaRecorder API
+- **Deployment**: Docker (optional)
 
 ## Browser Compatibility
 
