@@ -1,11 +1,13 @@
-# Use Python 3.11 slim image
-FROM python:3.11-slim
+# Use Python 3.11 on Debian bullseye for PyAV compatibility
+FROM python:3.11-bullseye
 
 # Set working directory
 WORKDIR /app
 
 # Install system dependencies required for faster-whisper
 RUN apt-get update && apt-get install -y \
+    build-essential \
+    pkg-config \
     ffmpeg \
     libavcodec-dev \
     libavformat-dev \
