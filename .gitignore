@@ -4,9 +4,7 @@ __pycache__/
 *$py.class
 *.so
 .Python
-env/
 venv/
-ENV/
 build/
 develop-eggs/
 dist/
@@ -24,8 +22,6 @@ wheels/
 *.egg
 
 # Environment variables
-.env
-.env.local
 
 # Audio uploads
 uploads/

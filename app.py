@@ -9,6 +9,10 @@ import tempfile
 from pathlib import Path
 from typing import Optional
 from functools import lru_cache
+from dotenv import load_dotenv
+
+# Load environment variables from .env file
+load_dotenv()
 
 from fastapi import FastAPI, File, UploadFile, Form, HTTPException
 from fastapi.responses import HTMLResponse, JSONResponse
@@ -36,6 +40,9 @@ app = FastAPI(title="Speech Transcription & AI Response")
 # System instruction file path
 SYS_INSTRUCT_FILE = Path(__file__).parent / "sys_instruct"
 DEFAULT_SYS_INSTRUCT = "You are a helpful AI assistant."
+
+# Global session variable for system instruction (in-memory, not persisted)
+current_session_system_instruction: Optional[str] = None
 
 # Configure CORS
 app.add_middleware(
@@ -70,7 +77,12 @@ def infer_upload_suffix(upload: UploadFile, default: str = ".webm") -> str:
 
 
 def get_system_instruction() -> str:
-    """Load system instruction from file, or return default."""
+    """Get system instruction from current session, or file, or default."""
+    # Check if there's a session-specific instruction first
+    if current_session_system_instruction is not None:
+        return current_session_system_instruction
+    
+    # Fall back to file
     if SYS_INSTRUCT_FILE.exists():
         try:
             return SYS_INSTRUCT_FILE.read_text(encoding="utf-8").strip()
@@ -78,15 +90,6 @@ def get_system_instruction() -> str:
             logger.warning("Failed to read system instruction file: %s", e)
     return DEFAULT_SYS_INSTRUCT
 
-
-def save_system_instruction(content: str) -> None:
-    """Save system instruction to file."""
-    try:
-        SYS_INSTRUCT_FILE.write_text(content, encoding="utf-8")
-        logger.info("System instruction saved")
-    except Exception as e:
-        logger.error("Failed to save system instruction: %s", e)
-        raise HTTPException(status_code=500, detail=f"Failed to save system instruction: {str(e)}")
 
 class TranscriptionRequest(BaseModel):
     model: str = Field(default="tiny", pattern="^(tiny|large|TheChola/whisper-large-v3-turbo-german-faster-whisper)$")
@@ -352,16 +355,14 @@ async def generate_gemini_response(request: GeminiRequest):
         )
 
     try:
-        genai.configure(api_key=gemini_api_key)
-        
         # Get the mapped model name
         model_name = get_gemini_model(request.model)
         
         # Use provided system instruction or load from file
         system_instruction = request.system_instruction or get_system_instruction()
         
-        # Create client and generate content with system instruction
-        client = genai.Client()
+        # Create client with API key
+        client = genai.Client(api_key=gemini_api_key)
         
         logger.debug("Submitting prompt to Gemini model '%s' with system instruction", model_name)
         response = client.models.generate_content(
@@ -395,7 +396,7 @@ async def health_check():
 
 @app.get("/api/system_instruction")
 async def get_system_instruction_endpoint():
-    """Get current system instruction."""
+    """Get current system instruction (from session)."""
     try:
         instruction = get_system_instruction()
         return JSONResponse(content={
@@ -408,22 +409,27 @@ async def get_system_instruction_endpoint():
 
 @app.post("/api/system_instruction")
 async def save_system_instruction_endpoint(instruction: str = Form(...)):
-    """Save system instruction."""
+    """Save system instruction for current session (in-memory only, not persisted to file)."""
+    global current_session_system_instruction
+    
     try:
         if not instruction.strip():
             raise HTTPException(status_code=400, detail="System instruction cannot be empty")
         
-        save_system_instruction(instruction)
+        # Store in session (global variable) - NOT to file
+        current_session_system_instruction = instruction.strip()
+        logger.info("System instruction updated for current session")
+        
         return JSONResponse(content={
             "status": "success",
-            "message": "System instruction saved"
+            "message": "System instruction updated for this session"
         })
     except HTTPException:
         raise
     except Exception as e:
-        logger.exception("Failed to save system instruction")
-        raise HTTPException(status_code=500, detail=f"Failed to save system instruction: {str(e)}")
+        logger.exception("Failed to update system instruction")
+        raise HTTPException(status_code=500, detail=f"Failed to update system instruction: {str(e)}")
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000, reload=True, log_level="debug")
+    uvicorn.run(app, host="0.0.0.0", port=8031, reload=True, log_level="info")

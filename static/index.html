@@ -550,6 +550,14 @@
                     Gemini Response
                 </h2>
                 <textarea id="gemini-response-text" placeholder="AI response will appear here..."></textarea>
+                <div style="margin-top: 12px; display: flex; gap: 12px;">
+                    <button id="copy-gemini-btn" class="button" style="flex: 1;" disabled>
+                        <svg class="icon" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 16h8M8 12h8m-6 8h10a2 2 0 002-2V8a2 2 0 00-2-2h-8l-4-4H4a2 2 0 00-2 2v12a2 2 0 002 2h2" />
+                        </svg>
+                        Copy Response
+                    </button>
+                </div>
             </div>
         </div>
     </div>
@@ -614,6 +622,7 @@
         const modalSaveBtn = document.getElementById('modal-save-btn');
         const modalCancelBtn = document.getElementById('modal-cancel-btn');
         const modalCloseBtn = document.getElementById('modal-close-btn');
+    const copyGeminiBtn = document.getElementById('copy-gemini-btn');
 
         function showToast(message, type = 'info') {
             const toast = document.getElementById('toast');
@@ -627,6 +636,41 @@
         function updateStatus(status, text) {
             statusDot.className = `status-dot ${status}`;
             statusText.textContent = text;
+        }
+
+        function updateCopyGeminiButton() {
+            copyGeminiBtn.disabled = !geminiResponseText.value.trim();
+        }
+
+        async function copyToClipboard(text) {
+            try {
+                if (navigator.clipboard && window.isSecureContext) {
+                    await navigator.clipboard.writeText(text);
+                } else {
+                    const temp = document.createElement('textarea');
+                    temp.value = text;
+                    temp.style.position = 'fixed';
+                    temp.style.opacity = '0';
+                    document.body.appendChild(temp);
+                    temp.focus();
+                    temp.select();
+                    document.execCommand('copy');
+                    document.body.removeChild(temp);
+                }
+                showToast('Response copied to clipboard', 'success');
+            } catch (err) {
+                console.error('Clipboard copy failed:', err);
+                showToast('Failed to copy to clipboard', 'error');
+            }
+        }
+
+        function copyGeminiResponse() {
+            const text = geminiResponseText.value;
+            if (!text.trim()) {
+                showToast('No response to copy', 'error');
+                return;
+            }
+            copyToClipboard(text);
         }
 
         function resetStreamingState(clearText = true) {
@@ -1062,6 +1106,11 @@
 
                 const geminiData = await geminiResponse.json();
                 geminiResponseText.value = geminiData.response;
+                updateCopyGeminiButton();
+                // Auto-copy on successful response
+                if (geminiData.response && geminiData.response.trim()) {
+                    copyToClipboard(geminiData.response);
+                }
                 showToast('AI response generated', 'success');
             } catch (error) {
                 throw error;
@@ -1093,6 +1142,7 @@
             geminiResponseText.value = '';
             streamingTranscription = '';
             sendToGeminiBtn.disabled = true;
+            updateCopyGeminiButton();
             updateStatus('ready', 'Ready to record');
             showToast('UI reset', 'success');
         }
@@ -1190,10 +1240,12 @@
         resetUiBtn.addEventListener('click', resetUI);
         whisperModelSelect.addEventListener('change', preloadWhisperModel);
         transcriptionText.addEventListener('input', updateSendToGeminiButton);
+    geminiResponseText.addEventListener('input', updateCopyGeminiButton);
         editSystemInstructionBtn.addEventListener('click', openSystemInstructionModal);
         modalSaveBtn.addEventListener('click', saveSystemInstruction);
         modalCancelBtn.addEventListener('click', closeSystemInstructionModal);
         modalCloseBtn.addEventListener('click', closeSystemInstructionModal);
+    copyGeminiBtn.addEventListener('click', copyGeminiResponse);
 
         if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
             showToast('Your browser does not support audio recording', 'error');
@@ -1212,6 +1264,7 @@
         // Preload default model on page load
         window.addEventListener('load', () => {
             setTimeout(preloadWhisperModel, 500);
+            updateCopyGeminiButton();
         });
     </script>
 </body>
