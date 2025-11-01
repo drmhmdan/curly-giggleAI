@@ -115,12 +115,18 @@ def get_whisper_model(model_name: str = "tiny"):
     if model_name not in whisper_models:
         logger.info("Loading Whisper model '%s'", model_name)
         try:
+            # Set model cache directory
+            model_cache_dir = Path(__file__).parent / ".cache" / "faster-whisper"
+            model_cache_dir.mkdir(parents=True, exist_ok=True)
+            
             whisper_models[model_name] = WhisperModel(
                 model_name,
                 device="cpu",
-                compute_type="int8"
+                compute_type="int8",
+                download_root=str(model_cache_dir),
+                local_files_only=False  # Allow downloading from HuggingFace
             )
-            logger.info("Whisper model '%s' loaded on CPU", model_name)
+            logger.info("Whisper model '%s' loaded on CPU from %s", model_name, model_cache_dir)
         except Exception as e:
             logger.exception("Failed to load Whisper model '%s'", model_name)
             raise HTTPException(status_code=500, detail=f"Failed to load model: {str(e)}")
