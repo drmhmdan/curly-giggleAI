@@ -124,14 +124,29 @@ def get_whisper_model(model_name: str = "tiny"):
             hf_token = os.getenv("HUGGINGFACE_API_TOKEN")
             if hf_token:
                 os.environ["HF_TOKEN"] = hf_token
+                logger.info("HuggingFace token configured")
             
-            whisper_models[model_name] = WhisperModel(
-                model_name,
-                device="cpu",
-                compute_type="int8",
-                download_root=str(model_cache_dir),
-                local_files_only=False  # Allow downloading from HuggingFace
-            )
+            # Try loading model with token if available, fallback to public access
+            try:
+                whisper_models[model_name] = WhisperModel(
+                    model_name,
+                    device="cpu",
+                    compute_type="int8",
+                    download_root=str(model_cache_dir),
+                    local_files_only=False  # Allow downloading from HuggingFace
+                )
+            except Exception as download_error:
+                logger.warning("Model download with token failed, attempting without token: %s", str(download_error))
+                # Clear token and try again as public access
+                os.environ.pop("HF_TOKEN", None)
+                os.environ["HF_TOKEN"] = ""
+                whisper_models[model_name] = WhisperModel(
+                    model_name,
+                    device="cpu",
+                    compute_type="int8",
+                    download_root=str(model_cache_dir),
+                    local_files_only=False
+                )
             logger.info("Whisper model '%s' loaded on CPU from %s", model_name, model_cache_dir)
         except Exception as e:
             logger.exception("Failed to load Whisper model '%s'", model_name)

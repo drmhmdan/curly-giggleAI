@@ -1,12 +1,46 @@
-version: '3.8'
+version: '3.9'
 
 services:
-  app:
-    build: .
+  curly-giggleai:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: curly-giggleai
+    
     ports:
-      - "8000:8000"
+      - "8031:8031"
+    
+    env_file:
+      - .env
+    
     environment:
-      - GEMINI_API_KEY=${GEMINI_API_KEY}
+      - PYTHONUNBUFFERED=1
+      - HF_HUB_DISABLE_TELEMETRY=1
+      - TRANSFORMERS_OFFLINE=0
+    
     volumes:
+      # Model cache persistence - survives container restarts
+      - whisper_cache:/app/.cache/faster-whisper
+      # Static files (optional, for development)
       - ./static:/app/static:ro
+    
+    # No resource limits - full CPU and RAM access for AI model inference
+    # AI models (Whisper, Gemini) require maximum available resources
+    
+    # Restart policy for production
     restart: unless-stopped
+    
+    # Logging configuration
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    
+    # Performance tuning
+    stdin_open: false
+    tty: false
+
+volumes:
+  whisper_cache:
+    driver: local
