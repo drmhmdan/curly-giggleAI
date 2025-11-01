@@ -1,4 +1,5 @@
-# Python
+# Python´
+.env
 __pycache__/
 *.py[cod]
 *$py.class
@@ -38,3 +39,6 @@ uploads/
 # OS
 .DS_Store
 Thumbs.db
+
+# Cache
+.cache/

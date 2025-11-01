@@ -18,7 +18,7 @@ from fastapi import FastAPI, File, UploadFile, Form, HTTPException
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel, Field, validator
+from pydantic import BaseModel, Field, field_validator
 
 try:
     from faster_whisper import WhisperModel
@@ -100,7 +100,8 @@ class GeminiRequest(BaseModel):
     model: str = Field(default="flash 2.5 (stable)")
     system_instruction: Optional[str] = Field(default=None)
     
-    @validator('text')
+    @field_validator('text')
+    @classmethod
     def text_not_empty(cls, v):
         if not v.strip():
             raise ValueError('Text cannot be empty or whitespace only')
@@ -118,6 +119,11 @@ def get_whisper_model(model_name: str = "tiny"):
             # Set model cache directory
             model_cache_dir = Path(__file__).parent / ".cache" / "faster-whisper"
             model_cache_dir.mkdir(parents=True, exist_ok=True)
+            
+            # Set HuggingFace API token in environment if available
+            hf_token = os.getenv("HUGGINGFACE_API_TOKEN")
+            if hf_token:
+                os.environ["HF_TOKEN"] = hf_token
             
             whisper_models[model_name] = WhisperModel(
                 model_name,
