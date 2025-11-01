@@ -361,8 +361,8 @@
                 <div class="config-section">
                     <label for="whisper-model">Whisper Model</label>
                     <select id="whisper-model">
-                        <option value="tiny">Tiny (fastest)</option>
-                        <option value="base" selected>Base (recommended)</option>
+                        <option value="tiny" selected>Tiny (fastest)</option>
+                        <option value="base">Base (recommended)</option>
                         <option value="small">Small</option>
                         <option value="medium">Medium</option>
                         <option value="large">Large (most accurate)</option>
@@ -398,8 +398,12 @@
                 <div class="config-section">
                     <label>Options</label>
                     <div class="checkbox-wrapper">
-                        <input type="checkbox" id="auto-send" checked>
-                        <label for="auto-send" class="checkbox-label">Auto-send after stop</label>
+                        <input type="checkbox" id="auto-transcribe" checked>
+                        <label for="auto-transcribe" class="checkbox-label">Auto-transcribe after stop</label>
+                    </div>
+                    <div class="checkbox-wrapper" style="margin-top: 8px;">
+                        <input type="checkbox" id="auto-send-gemini" checked>
+                        <label for="auto-send-gemini" class="checkbox-label">Auto-send to Gemini</label>
                     </div>
                 </div>
             </div>
@@ -447,6 +451,20 @@
                     Transcription
                 </h2>
                 <textarea id="transcription-text" placeholder="Your transcription will appear here..."></textarea>
+                <div style="margin-top: 12px; display: flex; gap: 12px;">
+                    <button id="send-to-gemini-btn" class="button button-primary" style="flex: 1;" disabled>
+                        <svg class="icon" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"></path>
+                        </svg>
+                        Send to Gemini
+                    </button>
+                    <button id="reset-ui-btn" class="button button-danger" style="flex: 1;">
+                        <svg class="icon" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"></path>
+                        </svg>
+                        Reset
+                    </button>
+                </div>
             </div>
 
             <div class="card">
@@ -464,9 +482,28 @@
     <div id="toast" class="toast"></div>
 
     <script>
-        let mediaRecorder;
-        let audioChunks = [];
+        const SEGMENT_LENGTH_SECONDS = 1.5;
+        const SEGMENT_OVERLAP_SECONDS = 0;
+        const SEGMENT_STEP_SECONDS = SEGMENT_LENGTH_SECONDS;
+        const PCM_BUFFER_PAD_SECONDS = SEGMENT_LENGTH_SECONDS + 1;
+        const SCRIPT_PROCESSOR_SIZE = 4096;
+
+        let audioContext;
+        let audioStream;
+        let audioSourceNode;
+        let audioProcessorNode;
+        let silentGainNode;
         let isRecording = false;
+        let streamingTranscription = '';
+        let chunkProcessing = Promise.resolve();
+        let pcmQueue = [];
+        let fullRecordingChunks = [];
+        let bufferedSamples = 0;
+        let totalRecordingSamples = 0;
+        let audioSampleRate = null;
+        let secondsSinceLastSegment = 0;
+        let hasSentSegment = false;
+        let updateDebounceTimer = null;
 
         const startBtn = document.getElementById('start-recording');
         const stopBtn = document.getElementById('stop-recording');
@@ -477,7 +514,10 @@
         const whisperModelSelect = document.getElementById('whisper-model');
         const languageSelect = document.getElementById('transcription-language');
         const geminiModelSelect = document.getElementById('gemini-model');
-        const autoSendCheckbox = document.getElementById('auto-send');
+        const autoTranscribeCheckbox = document.getElementById('auto-transcribe');
+        const autoSendGeminiCheckbox = document.getElementById('auto-send-gemini');
+        const sendToGeminiBtn = document.getElementById('send-to-gemini-btn');
+        const resetUiBtn = document.getElementById('reset-ui-btn');
 
         function showToast(message, type = 'info') {
             const toast = document.getElementById('toast');
@@ -493,28 +533,75 @@
             statusText.textContent = text;
         }
 
+        function resetStreamingState(clearText = true) {
+            streamingTranscription = '';
+            chunkProcessing = Promise.resolve();
+            pcmQueue = [];
+            fullRecordingChunks = [];
+            bufferedSamples = 0;
+            totalRecordingSamples = 0;
+            audioSampleRate = null;
+            secondsSinceLastSegment = 0;
+            hasSentSegment = false;
+            if (clearText) {
+                transcriptionText.value = '';
+                geminiResponseText.value = '';
+            }
+        }
+
+        async function cleanupRecordingResources() {
+            if (audioProcessorNode) {
+                audioProcessorNode.disconnect();
+                audioProcessorNode.onaudioprocess = null;
+                audioProcessorNode = null;
+            }
+
+            if (audioSourceNode) {
+                audioSourceNode.disconnect();
+                audioSourceNode = null;
+            }
+
+            if (silentGainNode) {
+                silentGainNode.disconnect();
+                silentGainNode = null;
+            }
+
+            if (audioStream) {
+                audioStream.getTracks().forEach(track => track.stop());
+                audioStream = null;
+            }
+
+            if (audioContext) {
+                try {
+                    await audioContext.close();
+                } catch (_) {
+                    // ignore close failures
+                }
+                audioContext = null;
+            }
+        }
+
         async function startRecording() {
             try {
-                const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-                mediaRecorder = new MediaRecorder(stream);
-                audioChunks = [];
+                const stream = await navigator.mediaDevices.getUserMedia({ audio: { channelCount: 1 } });
 
-                mediaRecorder.ondataavailable = (event) => {
-                    audioChunks.push(event.data);
-                };
+                resetStreamingState();
 
-                mediaRecorder.onstop = async () => {
-                    const audioBlob = new Blob(audioChunks, { type: 'audio/webm' });
-                    stream.getTracks().forEach(track => track.stop());
-                    
-                    if (autoSendCheckbox.checked) {
-                        await processAudio(audioBlob);
-                    } else {
-                        updateStatus('ready', 'Recording saved. Auto-send is disabled.');
-                    }
-                };
+                audioContext = new (window.AudioContext || window.webkitAudioContext)();
+                await audioContext.resume();
+                audioSampleRate = audioContext.sampleRate;
 
-                mediaRecorder.start();
+                audioStream = stream;
+                audioSourceNode = audioContext.createMediaStreamSource(stream);
+                audioProcessorNode = audioContext.createScriptProcessor(SCRIPT_PROCESSOR_SIZE, 1, 1);
+                silentGainNode = audioContext.createGain();
+                silentGainNode.gain.value = 0;
+
+                audioProcessorNode.onaudioprocess = handleAudioProcess;
+                audioSourceNode.connect(audioProcessorNode);
+                audioProcessorNode.connect(silentGainNode);
+                silentGainNode.connect(audioContext.destination);
+
                 isRecording = true;
                 startBtn.disabled = true;
                 stopBtn.disabled = false;
@@ -524,26 +611,166 @@
                 console.error('Error starting recording:', error);
                 showToast('Failed to start recording: ' + error.message, 'error');
                 updateStatus('ready', 'Ready to record');
+                await cleanupRecordingResources();
+                resetStreamingState();
             }
         }
 
-        function stopRecording() {
-            if (mediaRecorder && isRecording) {
-                mediaRecorder.stop();
-                isRecording = false;
-                startBtn.disabled = false;
-                stopBtn.disabled = true;
-                updateStatus('processing', 'Processing audio...');
+        async function stopRecording() {
+            if (!isRecording) {
+                return;
             }
+
+            isRecording = false;
+            startBtn.disabled = false;
+            stopBtn.disabled = true;
+            
+            // Stop audio stream immediately
+            await cleanupRecordingResources();
+            
+            updateStatus('processing', 'Processing audio...');
+            await finishRecording();
         }
 
-        async function processAudio(audioBlob) {
+        async function finishRecording() {
             try {
-                updateStatus('processing', 'Transcribing audio...');
-                
-                // Transcribe audio
+                if (bufferedSamples > 0 && (!hasSentSegment || secondsSinceLastSegment > 0)) {
+                    await queueSegmentFromPcm(true);
+                }
+                await chunkProcessing;
+            } catch (error) {
+                console.error('Error awaiting chunk processing:', error);
+                showToast('Streaming error: ' + error.message, 'error');
+            }
+
+            // For real-time streaming: we've already transcribed chunks, so just send to Gemini if enabled
+            if (autoSendGeminiCheckbox.checked && streamingTranscription.trim()) {
+                try {
+                    await sendTranscriptionToGeminiInternal(streamingTranscription.trim());
+                } catch (error) {
+                    console.error('Error sending to Gemini:', error);
+                    showToast('Error: ' + error.message, 'error');
+                }
+            }
+
+            updateStatus('ready', 'Ready to record');
+            resetStreamingState(false);
+        }
+
+        function handleAudioProcess(event) {
+            if (!isRecording) {
+                return;
+            }
+
+            const inputBuffer = event.inputBuffer;
+            if (!audioSampleRate) {
+                audioSampleRate = inputBuffer.sampleRate || (audioContext ? audioContext.sampleRate : 44100);
+            }
+
+            const channelData = inputBuffer.getChannelData(0);
+            if (!channelData || channelData.length === 0) {
+                return;
+            }
+
+            const samples = new Float32Array(channelData.length);
+            samples.set(channelData);
+
+            handlePcmSamples(samples);
+        }
+
+        function handlePcmSamples(samples) {
+            pcmQueue.push(samples);
+            fullRecordingChunks.push(samples);
+            bufferedSamples += samples.length;
+            totalRecordingSamples += samples.length;
+
+            const chunkSeconds = samples.length / audioSampleRate;
+            secondsSinceLastSegment += chunkSeconds;
+
+            trimPcmQueue();
+
+            const requiredSamples = Math.round(SEGMENT_LENGTH_SECONDS * audioSampleRate);
+            let shouldQueue = false;
+
+            if (!hasSentSegment && bufferedSamples >= requiredSamples) {
+                hasSentSegment = true;
+                shouldQueue = true;
+            } else if (hasSentSegment && secondsSinceLastSegment >= SEGMENT_STEP_SECONDS) {
+                shouldQueue = true;
+            }
+
+            if (shouldQueue) {
+                queueSegmentFromPcm(false);
+                secondsSinceLastSegment = 0;
+            }
+        }
+
+        function queueSegmentFromPcm(isFinal) {
+            chunkProcessing = chunkProcessing
+                .then(() => enqueueSegmentFromPcm(isFinal))
+                .catch(error => {
+                    console.error('Segment processing error:', error);
+                    showToast('Streaming error: ' + error.message, 'error');
+                })
+                .finally(() => {
+                    if (isRecording) {
+                        updateStatus('recording', 'Recording in progress...');
+                    }
+                });
+
+            return chunkProcessing;
+        }
+
+        async function enqueueSegmentFromPcm(isFinal) {
+            if (!audioSampleRate || bufferedSamples === 0) {
+                return;
+            }
+
+            const requiredSamples = Math.round(SEGMENT_LENGTH_SECONDS * audioSampleRate);
+            const targetSamples = isFinal ? Math.min(bufferedSamples, requiredSamples) : requiredSamples;
+            const samples = collectRecentSamples(targetSamples, isFinal);
+            if (!samples || samples.length === 0) {
+                return;
+            }
+
+            const wavBuffer = encodePCMToWav(samples, audioSampleRate);
+            const wavBlob = new Blob([wavBuffer], { type: 'audio/wav' });
+            const statusMessage = isFinal ? 'Processing final segment...' : 'Streaming segment...';
+
+            await sendSegment(wavBlob, statusMessage);
+        }
+
+        async function sendSegment(blob, statusMessage) {
+            updateStatus('processing', statusMessage);
+
+            const formData = new FormData();
+            formData.append('audio_chunk', blob, `chunk-${Date.now()}.wav`);
+            formData.append('model', whisperModelSelect.value);
+            formData.append('language', languageSelect.value);
+
+            const response = await fetch('/api/transcribe_stream', {
+                method: 'POST',
+                body: formData
+            });
+
+            if (!response.ok) {
+                throw new Error('Chunk transcription failed');
+            }
+
+            const data = await response.json();
+            if (data.partial_transcription) {
+                streamingTranscription += (streamingTranscription ? ' ' : '') + data.partial_transcription;
+                transcriptionText.value = streamingTranscription.trim();
+                updateSendToGeminiButton();
+            }
+        }
+
+        async function processFinalSegment(finalBlob) {
+            try {
+                updateStatus('processing', 'Transcribing full recording...');
+
                 const formData = new FormData();
-                formData.append('audio', audioBlob, 'recording.webm');
+                formData.append('audio', finalBlob, 'recording.wav');
                 formData.append('model', whisperModelSelect.value);
                 formData.append('language', languageSelect.value);
 
@@ -558,18 +785,173 @@
 
                 const transcribeData = await transcribeResponse.json();
                 transcriptionText.value = transcribeData.transcription;
+                streamingTranscription = transcribeData.transcription;
+                updateSendToGeminiButton();
                 showToast('Transcription completed', 'success');
 
-                // Send to Gemini
-                updateStatus('processing', 'Generating AI response...');
+                if (autoSendGeminiCheckbox.checked) {
+                    updateStatus('processing', 'Generating AI response...');
+
+                    const geminiResponse = await fetch('/api/gemini', {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json'
+                        },
+                        body: JSON.stringify({
+                            text: transcribeData.transcription,
+                            model: geminiModelSelect.value
+                        })
+                    });
+
+                    if (!geminiResponse.ok) {
+                        throw new Error('Gemini API failed');
+                    }
+
+                    const geminiData = await geminiResponse.json();
+                    geminiResponseText.value = geminiData.response;
+                    showToast('AI response generated', 'success');
+                }
                 
+                updateStatus('ready', 'Ready to record');
+
+            } catch (error) {
+                console.error('Error processing final segment:', error);
+                showToast('Error: ' + error.message, 'error');
+                updateStatus('ready', 'Ready to record');
+            }
+        }
+
+        function trimPcmQueue() {
+            if (!audioSampleRate) {
+                return;
+            }
+
+            const maxSamples = Math.round(PCM_BUFFER_PAD_SECONDS * audioSampleRate);
+            while (bufferedSamples > maxSamples && pcmQueue.length > 0) {
+                const overflow = bufferedSamples - maxSamples;
+                const firstChunk = pcmQueue[0];
+
+                if (firstChunk.length <= overflow) {
+                    pcmQueue.shift();
+                    bufferedSamples -= firstChunk.length;
+                } else {
+                    const trimmed = firstChunk.slice(overflow);
+                    pcmQueue[0] = trimmed;
+                    bufferedSamples -= overflow;
+                    break;
+                }
+            }
+        }
+
+        function collectRecentSamples(targetSamples, allowPartial = false) {
+            if (bufferedSamples === 0) {
+                return null;
+            }
+
+            const availableSamples = Math.min(bufferedSamples, targetSamples);
+            if (!allowPartial && availableSamples < targetSamples) {
+                return null;
+            }
+
+            const desiredLength = allowPartial ? availableSamples : targetSamples;
+            const result = new Float32Array(desiredLength);
+            let remaining = desiredLength;
+            let writeIndex = desiredLength;
+
+            for (let i = pcmQueue.length - 1; i >= 0 && remaining > 0; i--) {
+                const chunk = pcmQueue[i];
+                const take = Math.min(remaining, chunk.length);
+                writeIndex -= take;
+                result.set(chunk.subarray(chunk.length - take), writeIndex);
+                remaining -= take;
+            }
+
+            if (writeIndex > 0) {
+                return allowPartial ? result.slice(writeIndex) : null;
+            }
+
+            // Remove consumed samples from buffer to prevent repetition
+            let samplesToRemove = desiredLength;
+            while (samplesToRemove > 0 && pcmQueue.length > 0) {
+                const firstChunk = pcmQueue[0];
+                if (firstChunk.length <= samplesToRemove) {
+                    samplesToRemove -= firstChunk.length;
+                    bufferedSamples -= firstChunk.length;
+                    pcmQueue.shift();
+                } else {
+                    const newChunk = firstChunk.subarray(samplesToRemove);
+                    pcmQueue[0] = newChunk;
+                    bufferedSamples -= samplesToRemove;
+                    samplesToRemove = 0;
+                }
+            }
+
+            return result;
+        }
+
+        function encodePCMToWav(samples, sampleRate) {
+            const buffer = new ArrayBuffer(44 + samples.length * 2);
+            const view = new DataView(buffer);
+
+            writeString(view, 0, 'RIFF');
+            view.setUint32(4, 36 + samples.length * 2, true);
+            writeString(view, 8, 'WAVE');
+            writeString(view, 12, 'fmt ');
+            view.setUint32(16, 16, true);
+            view.setUint16(20, 1, true);
+            view.setUint16(22, 1, true);
+            view.setUint32(24, sampleRate, true);
+            view.setUint32(28, sampleRate * 2, true);
+            view.setUint16(32, 2, true);
+            view.setUint16(34, 16, true);
+            writeString(view, 36, 'data');
+            view.setUint32(40, samples.length * 2, true);
+            floatTo16BitPCM(view, 44, samples);
+
+            return buffer;
+        }
+
+        function floatTo16BitPCM(view, offset, input) {
+            for (let i = 0; i < input.length; i++, offset += 2) {
+                let s = Math.max(-1, Math.min(1, input[i]));
+                s = s < 0 ? s * 0x8000 : s * 0x7fff;
+                view.setInt16(offset, s, true);
+            }
+        }
+
+        function writeString(view, offset, string) {
+            for (let i = 0; i < string.length; i++) {
+                view.setUint8(offset + i, string.charCodeAt(i));
+            }
+        }
+
+        function buildFullRecordingBlob() {
+            if (!audioSampleRate || totalRecordingSamples === 0) {
+                return null;
+            }
+
+            const combined = new Float32Array(totalRecordingSamples);
+            let offset = 0;
+            for (const chunk of fullRecordingChunks) {
+                combined.set(chunk, offset);
+                offset += chunk.length;
+            }
+
+            const wavBuffer = encodePCMToWav(combined, audioSampleRate);
+            return new Blob([wavBuffer], { type: 'audio/wav' });
+        }
+
+        async function sendTranscriptionToGeminiInternal(transcriptionText) {
+            try {
+                updateStatus('processing', 'Generating AI response...');
+
                 const geminiResponse = await fetch('/api/gemini', {
                     method: 'POST',
                     headers: {
                         'Content-Type': 'application/json'
                     },
                     body: JSON.stringify({
-                        text: transcribeData.transcription,
+                        text: transcriptionText,
                         model: geminiModelSelect.value
                     })
                 });
@@ -581,27 +963,89 @@
                 const geminiData = await geminiResponse.json();
                 geminiResponseText.value = geminiData.response;
                 showToast('AI response generated', 'success');
-                updateStatus('ready', 'Ready to record');
-
             } catch (error) {
-                console.error('Error processing audio:', error);
+                throw error;
+            }
+        }
+
+        async function sendTranscriptionToGemini() {
+            const transcription = transcriptionText.value.trim();
+            if (!transcription) {
+                showToast('No transcription to send', 'error');
+                return;
+            }
+
+            try {
+                sendToGeminiBtn.disabled = true;
+                await sendTranscriptionToGeminiInternal(transcription);
+                updateStatus('ready', 'Ready to record');
+            } catch (error) {
+                console.error('Error sending to Gemini:', error);
                 showToast('Error: ' + error.message, 'error');
+                updateStatus('ready', 'Ready to record');
+            } finally {
+                sendToGeminiBtn.disabled = false;
+            }
+        }
+
+        function resetUI() {
+            transcriptionText.value = '';
+            geminiResponseText.value = '';
+            streamingTranscription = '';
+            sendToGeminiBtn.disabled = true;
+            updateStatus('ready', 'Ready to record');
+            showToast('UI reset', 'success');
+        }
+
+        async function preloadWhisperModel() {
+            try {
+                const selectedModel = whisperModelSelect.value;
+                updateStatus('processing', `Loading ${selectedModel} model...`);
+                
+                const formData = new FormData();
+                formData.append('model', selectedModel);
+                
+                const response = await fetch('/api/preload_model', {
+                    method: 'POST',
+                    body: formData
+                });
+
+                if (response.ok) {
+                    const data = await response.json();
+                    showToast(`Model '${selectedModel}' loaded successfully`, 'success');
+                    updateStatus('ready', 'Ready to record');
+                } else {
+                    throw new Error('Failed to preload model');
+                }
+            } catch (error) {
+                console.error('Error preloading model:', error);
+                showToast('Error loading model: ' + error.message, 'error');
                 updateStatus('ready', 'Ready to record');
             }
         }
 
-        // Event listeners
+        function updateSendToGeminiButton() {
+            sendToGeminiBtn.disabled = !transcriptionText.value.trim();
+        }
+
         startBtn.addEventListener('click', startRecording);
         stopBtn.addEventListener('click', stopRecording);
+        sendToGeminiBtn.addEventListener('click', sendTranscriptionToGemini);
+        resetUiBtn.addEventListener('click', resetUI);
+        whisperModelSelect.addEventListener('change', preloadWhisperModel);
+        transcriptionText.addEventListener('input', updateSendToGeminiButton);
 
-        // Check browser support
         if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
             showToast('Your browser does not support audio recording', 'error');
             startBtn.disabled = true;
         }
 
-        // Initialize
         updateStatus('ready', 'Ready to record');
+        
+        // Preload default model on page load
+        window.addEventListener('load', () => {
+            setTimeout(preloadWhisperModel, 500);
+        });
     </script>
 </body>
 </html>

@@ -3,6 +3,7 @@ FastAPI backend server for speech transcription and AI response generation.
 Uses faster-whisper for transcription and Google Gemini for AI responses.
 """
 import logging
+import mimetypes
 import os
 import tempfile
 from pathlib import Path
@@ -42,15 +43,33 @@ app.add_middleware(
 whisper_models = {}
 gemini_api_key = os.getenv("GEMINI_API_KEY", "")
 
+
+def infer_upload_suffix(upload: UploadFile, default: str = ".webm") -> str:
+    """Infer file suffix for an uploaded audio blob."""
+    if upload and upload.filename:
+        suffix = Path(upload.filename).suffix
+        if suffix:
+            return suffix
+
+    content_type = getattr(upload, "content_type", None)
+    if content_type:
+        if content_type in {"audio/wav", "audio/x-wav"}:
+            return ".wav"
+        guessed = mimetypes.guess_extension(content_type)
+        if guessed:
+            return guessed
+
+    return default
+
 class TranscriptionRequest(BaseModel):
-    model: str = "base"
+    model: str = "tiny"
     language: str = "de"
 
 class GeminiRequest(BaseModel):
     text: str
     model: str = "gemini-2.0-flash-exp"
 
-def get_whisper_model(model_name: str = "base"):
+def get_whisper_model(model_name: str = "tiny"):
     """Get or create a Whisper model instance."""
     if WhisperModel is None:
         logger.error("faster-whisper import failed; transcription unavailable")
@@ -64,12 +83,27 @@ def get_whisper_model(model_name: str = "base"):
                 device="cpu",
                 compute_type="int8"
             )
-            logger.info("Whisper model '%s' loaded", model_name)
+            logger.info("Whisper model '%s' loaded on CPU", model_name)
         except Exception as e:
             logger.exception("Failed to load Whisper model '%s'", model_name)
             raise HTTPException(status_code=500, detail=f"Failed to load model: {str(e)}")
 
     return whisper_models[model_name]
+
+@app.post("/api/preload_model")
+async def preload_model(model: str = Form("tiny")):
+    """Preload a Whisper model to reduce first-use latency."""
+    try:
+        logger.info("Preloading Whisper model '%s'", model)
+        get_whisper_model(model)
+        return JSONResponse(content={
+            "status": "success",
+            "model": model,
+            "message": f"Model '{model}' loaded successfully"
+        })
+    except Exception as e:
+        logger.exception("Failed to preload model '%s'", model)
+        raise HTTPException(status_code=500, detail=f"Failed to preload model: {str(e)}")
 
 @app.get("/", response_class=HTMLResponse)
 async def read_root():
@@ -93,7 +127,7 @@ async def read_root():
 @app.post("/api/transcribe")
 async def transcribe_audio(
     audio: UploadFile = File(...),
-    model: str = Form("base"),
+    model: str = Form("tiny"),
     language: str = Form("de")
 ):
     """
@@ -118,7 +152,7 @@ async def transcribe_audio(
 
     try:
         # Save uploaded file temporarily
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".webm") as temp_audio:
+        with tempfile.NamedTemporaryFile(delete=False, suffix=infer_upload_suffix(audio, ".webm")) as temp_audio:
             content = await audio.read()
             temp_audio.write(content)
             temp_audio_path = temp_audio.name
@@ -159,6 +193,72 @@ async def transcribe_audio(
     except Exception as e:
         logger.exception("Transcription failed")
         raise HTTPException(status_code=500, detail=f"Transcription failed: {str(e)}")
+
+
+@app.post("/api/transcribe_stream")
+async def transcribe_audio_chunk(
+    audio_chunk: UploadFile = File(...),
+    model: str = Form("tiny"),
+    language: str = Form("de")
+):
+    """Transcribe a small audio chunk for near real-time updates."""
+    logger.debug(
+        "Streaming chunk received: filename=%s size=%s model=%s language=%s",
+        audio_chunk.filename,
+        audio_chunk.size if hasattr(audio_chunk, "size") else "?",
+        model,
+        language,
+    )
+
+    if WhisperModel is None:
+        logger.error("Chunk transcription requested but faster-whisper is not available")
+        return JSONResponse(
+            status_code=500,
+            content={"error": "faster-whisper not installed. Install with: pip install faster-whisper"}
+        )
+
+    temp_audio_path = None
+    try:
+        with tempfile.NamedTemporaryFile(delete=False, suffix=infer_upload_suffix(audio_chunk, ".webm")) as temp_audio:
+            chunk_bytes = await audio_chunk.read()
+            temp_audio.write(chunk_bytes)
+            temp_audio_path = temp_audio.name
+        logger.debug("Chunk stored at %s (%d bytes)", temp_audio_path, len(chunk_bytes))
+
+        whisper_model = get_whisper_model(model)
+        segments, info = whisper_model.transcribe(
+            temp_audio_path,
+            language=language,
+            beam_size=1,
+            best_of=1,
+            vad_filter=True,
+            vad_parameters=dict(min_silence_duration_ms=500),
+            condition_on_previous_text=False,
+            temperature=0.0,
+            compression_ratio_threshold=2.4,
+            no_speech_threshold=0.6,
+            word_timestamps=False
+        )
+        segments = list(segments)
+        text = " ".join(segment.text for segment in segments).strip()
+        logger.debug(
+            "Chunk transcription complete: language=%s len=%d", info.language, len(text)
+        )
+
+        return JSONResponse(content={
+            "partial_transcription": text,
+            "language": info.language,
+            "language_probability": info.language_probability
+        })
+
+    except Exception as e:
+        logger.exception("Chunk transcription failed")
+        raise HTTPException(status_code=500, detail=f"Chunk transcription failed: {str(e)}")
+
+    finally:
+        if temp_audio_path and os.path.exists(temp_audio_path):
+            logger.debug("Removing temporary chunk file %s", temp_audio_path)
+            os.unlink(temp_audio_path)
 
 @app.post("/api/gemini")
 async def generate_gemini_response(request: GeminiRequest):
@@ -227,4 +327,4 @@ async def health_check():
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    uvicorn.run(app, host="0.0.0.0", port=8000, reload=True, log_level="debug")
