@@ -338,6 +338,85 @@
         @keyframes spin {
             to { transform: rotate(360deg); }
         }
+
+        .modal {
+            display: none;
+            position: fixed;
+            z-index: 2000;
+            left: 0;
+            top: 0;
+            width: 100%;
+            height: 100%;
+            background-color: rgba(0, 0, 0, 0.5);
+            animation: fadeIn 0.3s ease-out;
+        }
+
+        .modal.show {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .modal-content {
+            background: var(--surface);
+            border-radius: 16px;
+            padding: 24px;
+            max-width: 600px;
+            width: 90%;
+            max-height: 80vh;
+            overflow-y: auto;
+            border: 1px solid var(--border-color);
+            box-shadow: 0 8px 32px var(--shadow);
+        }
+
+        .modal-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 20px;
+            padding-bottom: 12px;
+            border-bottom: 1px solid var(--border-color);
+        }
+
+        .modal-header h2 {
+            margin: 0;
+            font-size: 1.5rem;
+        }
+
+        .modal-close {
+            background: none;
+            border: none;
+            color: var(--text-secondary);
+            font-size: 1.5rem;
+            cursor: pointer;
+            padding: 0;
+            width: 32px;
+            height: 32px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            transition: color 0.2s;
+        }
+
+        .modal-close:hover {
+            color: var(--text-primary);
+        }
+
+        .modal-footer {
+            display: flex;
+            gap: 12px;
+            margin-top: 20px;
+            justify-content: flex-end;
+        }
+
+        @keyframes fadeIn {
+            from {
+                opacity: 0;
+            }
+            to {
+                opacity: 1;
+            }
+        }
     </style>
 </head>
 <body>
@@ -361,27 +440,18 @@
                 <div class="config-section">
                     <label for="whisper-model">Whisper Model</label>
                     <select id="whisper-model">
-                        <option value="tiny" selected>Tiny (fastest)</option>
-                        <option value="base">Base (recommended)</option>
-                        <option value="small">Small</option>
-                        <option value="medium">Medium</option>
-                        <option value="large">Large (most accurate)</option>
+                        <option value="tiny" selected>tiny</option>
+                        <option value="large">large</option>
+                        <option value="TheChola/whisper-large-v3-turbo-german-faster-whisper">TheChola/whisper-large-v3-turbo-german-faster-whisper</option>
                     </select>
                 </div>
 
                 <div class="config-section">
                     <label for="transcription-language">Transcription Language</label>
                     <select id="transcription-language">
-                        <option value="de" selected>German</option>
+                        <option value="de" selected>German (Deutsch)</option>
                         <option value="en">English</option>
-                        <option value="es">Spanish</option>
-                        <option value="fr">French</option>
-                        <option value="it">Italian</option>
-                        <option value="pt">Portuguese</option>
-                        <option value="ru">Russian</option>
-                        <option value="zh">Chinese</option>
-                        <option value="ja">Japanese</option>
-                        <option value="ko">Korean</option>
+                        <option value="ar">Arabic (العربية)</option>
                     </select>
                 </div>
 
@@ -389,9 +459,8 @@
                     <label for="gemini-model">Gemini Model</label>
                     <select id="gemini-model">
                         <option value="flash 2.5 (stable)" selected>flash 2.5 (stable)</option>
-                        <option value="gemini-1.5-pro">Gemini 1.5 Pro</option>
-                        <option value="gemini-1.5-flash">Gemini 1.5 Flash</option>
-                        <option value="gemini-pro">Gemini Pro</option>
+                        <option value="pro 2.5">pro 2.5</option>
+                        <option value="flash 2.5 lite">flash 2.5 lite</option>
                     </select>
                 </div>
 
@@ -405,6 +474,12 @@
                         <input type="checkbox" id="auto-send-gemini" checked>
                         <label for="auto-send-gemini" class="checkbox-label">Auto-send to Gemini</label>
                     </div>
+                    <button id="edit-system-instruction-btn" class="button button-primary" style="margin-top: 12px; width: 100%;">
+                        <svg class="icon" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"></path>
+                        </svg>
+                        Edit System Instruction
+                    </button>
                 </div>
             </div>
 
@@ -481,8 +556,23 @@
 
     <div id="toast" class="toast"></div>
 
+    <div id="system-instruction-modal" class="modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2>System Instruction</h2>
+                <button class="modal-close" id="modal-close-btn" type="button">×</button>
+            </div>
+            <label for="system-instruction-textarea">Edit the system instruction that guides the AI behavior:</label>
+            <textarea id="system-instruction-textarea" style="min-height: 200px; margin: 12px 0;" placeholder="Enter system instruction..."></textarea>
+            <div class="modal-footer">
+                <button id="modal-cancel-btn" class="button button-danger">Cancel</button>
+                <button id="modal-save-btn" class="button button-primary">Save</button>
+            </div>
+        </div>
+    </div>
+
     <script>
-        const SEGMENT_LENGTH_SECONDS = 1.5;
+        const SEGMENT_LENGTH_SECONDS = 3;
         const SEGMENT_OVERLAP_SECONDS = 0;
         const SEGMENT_STEP_SECONDS = SEGMENT_LENGTH_SECONDS;
         const PCM_BUFFER_PAD_SECONDS = SEGMENT_LENGTH_SECONDS + 1;
@@ -518,6 +608,12 @@
         const autoSendGeminiCheckbox = document.getElementById('auto-send-gemini');
         const sendToGeminiBtn = document.getElementById('send-to-gemini-btn');
         const resetUiBtn = document.getElementById('reset-ui-btn');
+        const editSystemInstructionBtn = document.getElementById('edit-system-instruction-btn');
+        const systemInstructionModal = document.getElementById('system-instruction-modal');
+        const systemInstructionTextarea = document.getElementById('system-instruction-textarea');
+        const modalSaveBtn = document.getElementById('modal-save-btn');
+        const modalCancelBtn = document.getElementById('modal-cancel-btn');
+        const modalCloseBtn = document.getElementById('modal-close-btn');
 
         function showToast(message, type = 'info') {
             const toast = document.getElementById('toast');
@@ -945,6 +1041,9 @@
             try {
                 updateStatus('processing', 'Generating AI response...');
 
+                // Get current system instruction
+                const systemInstruction = systemInstructionTextarea.value.trim() || null;
+
                 const geminiResponse = await fetch('/api/gemini', {
                     method: 'POST',
                     headers: {
@@ -952,7 +1051,8 @@
                     },
                     body: JSON.stringify({
                         text: transcriptionText,
-                        model: geminiModelSelect.value
+                        model: geminiModelSelect.value,
+                        system_instruction: systemInstruction
                     })
                 });
 
@@ -1028,17 +1128,84 @@
             sendToGeminiBtn.disabled = !transcriptionText.value.trim();
         }
 
+        function openSystemInstructionModal() {
+            systemInstructionModal.classList.add('show');
+            // Load current system instruction
+            loadSystemInstruction();
+        }
+
+        function closeSystemInstructionModal() {
+            systemInstructionModal.classList.remove('show');
+        }
+
+        async function loadSystemInstruction() {
+            try {
+                const response = await fetch('/api/system_instruction');
+                if (response.ok) {
+                    const data = await response.json();
+                    systemInstructionTextarea.value = data.system_instruction;
+                } else {
+                    showToast('Failed to load system instruction', 'error');
+                }
+            } catch (error) {
+                console.error('Error loading system instruction:', error);
+                showToast('Error loading system instruction: ' + error.message, 'error');
+            }
+        }
+
+        async function saveSystemInstruction() {
+            const instruction = systemInstructionTextarea.value.trim();
+            if (!instruction) {
+                showToast('System instruction cannot be empty', 'error');
+                return;
+            }
+
+            try {
+                modalSaveBtn.disabled = true;
+                const formData = new FormData();
+                formData.append('instruction', instruction);
+
+                const response = await fetch('/api/system_instruction', {
+                    method: 'POST',
+                    body: formData
+                });
+
+                if (response.ok) {
+                    showToast('System instruction saved', 'success');
+                    closeSystemInstructionModal();
+                } else {
+                    showToast('Failed to save system instruction', 'error');
+                }
+            } catch (error) {
+                console.error('Error saving system instruction:', error);
+                showToast('Error saving system instruction: ' + error.message, 'error');
+            } finally {
+                modalSaveBtn.disabled = false;
+            }
+        }
+
         startBtn.addEventListener('click', startRecording);
         stopBtn.addEventListener('click', stopRecording);
         sendToGeminiBtn.addEventListener('click', sendTranscriptionToGemini);
         resetUiBtn.addEventListener('click', resetUI);
         whisperModelSelect.addEventListener('change', preloadWhisperModel);
         transcriptionText.addEventListener('input', updateSendToGeminiButton);
+        editSystemInstructionBtn.addEventListener('click', openSystemInstructionModal);
+        modalSaveBtn.addEventListener('click', saveSystemInstruction);
+        modalCancelBtn.addEventListener('click', closeSystemInstructionModal);
+        modalCloseBtn.addEventListener('click', closeSystemInstructionModal);
 
         if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
             showToast('Your browser does not support audio recording', 'error');
             startBtn.disabled = true;
         }
+
+        // Close modal when clicking outside of it
+        systemInstructionModal.addEventListener('click', (e) => {
+            if (e.target === systemInstructionModal) {
+                closeSystemInstructionModal();
+            }
+        });
 
         updateStatus('ready', 'Ready to record');
         

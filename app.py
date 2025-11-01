@@ -8,12 +8,13 @@ import os
 import tempfile
 from pathlib import Path
 from typing import Optional
+from functools import lru_cache
 
 from fastapi import FastAPI, File, UploadFile, Form, HTTPException
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, validator
 
 try:
     from faster_whisper import WhisperModel
@@ -21,14 +22,20 @@ except ImportError:
     WhisperModel = None
 
 try:
-    import google.generativeai as genai
+    from google import genai
+    from google.genai import types
 except ImportError:
     genai = None
+    types = None
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
 logger = logging.getLogger("curly-giggleai")
 
 app = FastAPI(title="Speech Transcription & AI Response")
+
+# System instruction file path
+SYS_INSTRUCT_FILE = Path(__file__).parent / "sys_instruct"
+DEFAULT_SYS_INSTRUCT = "You are a helpful AI assistant."
 
 # Configure CORS
 app.add_middleware(
@@ -61,13 +68,40 @@ def infer_upload_suffix(upload: UploadFile, default: str = ".webm") -> str:
 
     return default
 
+
+def get_system_instruction() -> str:
+    """Load system instruction from file, or return default."""
+    if SYS_INSTRUCT_FILE.exists():
+        try:
+            return SYS_INSTRUCT_FILE.read_text(encoding="utf-8").strip()
+        except Exception as e:
+            logger.warning("Failed to read system instruction file: %s", e)
+    return DEFAULT_SYS_INSTRUCT
+
+
+def save_system_instruction(content: str) -> None:
+    """Save system instruction to file."""
+    try:
+        SYS_INSTRUCT_FILE.write_text(content, encoding="utf-8")
+        logger.info("System instruction saved")
+    except Exception as e:
+        logger.error("Failed to save system instruction: %s", e)
+        raise HTTPException(status_code=500, detail=f"Failed to save system instruction: {str(e)}")
+
 class TranscriptionRequest(BaseModel):
-    model: str = "tiny"
-    language: str = "de"
+    model: str = Field(default="tiny", pattern="^(tiny|large|TheChola/whisper-large-v3-turbo-german-faster-whisper)$")
+    language: str = Field(default="de", pattern="^(de|en|ar)$")
 
 class GeminiRequest(BaseModel):
-    text: str
-    model: str = "gemini-2.0-flash-exp"
+    text: str = Field(..., min_length=1, max_length=5000)
+    model: str = Field(default="flash 2.5 (stable)")
+    system_instruction: Optional[str] = Field(default=None)
+    
+    @validator('text')
+    def text_not_empty(cls, v):
+        if not v.strip():
+            raise ValueError('Text cannot be empty or whitespace only')
+        return v.strip()
 
 def get_whisper_model(model_name: str = "tiny"):
     """Get or create a Whisper model instance."""
@@ -89,6 +123,18 @@ def get_whisper_model(model_name: str = "tiny"):
             raise HTTPException(status_code=500, detail=f"Failed to load model: {str(e)}")
 
     return whisper_models[model_name]
+
+@lru_cache(maxsize=5)
+def get_gemini_model(model_name: str):
+    """Get Gemini model name mapping."""
+    logger.info("Getting Gemini model mapping for '%s'", model_name)
+    # Map display names to actual model identifiers
+    model_map = {
+        "pro 2.5": "models/gemini-2.5-pro",
+        "flash 2.5 (stable)": "models/gemini-2.5-flash",
+        "flash 2.5 lite": "models/gemini-2.5-flash-lite"
+    }
+    return model_map.get(model_name, "models/gemini-2.5-flash")
 
 @app.post("/api/preload_model")
 async def preload_model(model: str = Form("tiny")):
@@ -165,7 +211,20 @@ async def transcribe_audio(
             segments, info = whisper_model.transcribe(
                 temp_audio_path,
                 language=language,
-                beam_size=5
+                beam_size=1,
+                best_of=1,
+                vad_filter=True,
+                vad_parameters=dict(
+                    min_silence_duration_ms=300,
+                    threshold=0.5,
+                    min_speech_duration_ms=100
+                ),
+                condition_on_previous_text=False,
+                temperature=(0.0, 0.4),
+                compression_ratio_threshold=1.5,
+                no_speech_threshold=0.8,
+                word_timestamps=False,
+                repetition_penalty=2.0
             )
             segments = list(segments)
             logger.info(
@@ -232,12 +291,17 @@ async def transcribe_audio_chunk(
             beam_size=1,
             best_of=1,
             vad_filter=True,
-            vad_parameters=dict(min_silence_duration_ms=500),
+            vad_parameters=dict(
+                min_silence_duration_ms=300,
+                threshold=0.5,
+                min_speech_duration_ms=100
+            ),
             condition_on_previous_text=False,
-            temperature=0.0,
-            compression_ratio_threshold=2.4,
-            no_speech_threshold=0.6,
-            word_timestamps=False
+            temperature=(0.0, 0.4),
+            compression_ratio_threshold=1.5,
+            no_speech_threshold=0.8,
+            word_timestamps=False,
+            repetition_penalty=2.0
         )
         segments = list(segments)
         text = " ".join(segment.text for segment in segments).strip()
@@ -266,18 +330,18 @@ async def generate_gemini_response(request: GeminiRequest):
     Generate AI response using Google Gemini.
     
     Args:
-        request: Contains text prompt and model name
+        request: Contains text prompt, model name, and optional system instruction
     
     Returns:
         JSON with AI-generated response
     """
     logger.info("Gemini request received for model '%s'", request.model)
 
-    if genai is None:
+    if genai is None or types is None:
         logger.error("Gemini SDK import failed")
         return JSONResponse(
             status_code=500,
-            content={"error": "google-generativeai not installed. Install with: pip install google-generativeai"}
+            content={"error": "google-genai not installed. Install with: pip install google-genai"}
         )
 
     if not gemini_api_key:
@@ -290,20 +354,23 @@ async def generate_gemini_response(request: GeminiRequest):
     try:
         genai.configure(api_key=gemini_api_key)
         
-        # Map model names to actual Gemini model identifiers
-        model_map = {
-            "flash 2.5 (stable)": "gemini-2.0-flash-exp",
-            "gemini-2.0-flash-exp": "gemini-2.0-flash-exp",
-            "gemini-pro": "gemini-pro",
-            "gemini-1.5-pro": "gemini-1.5-pro",
-            "gemini-1.5-flash": "gemini-1.5-flash"
-        }
+        # Get the mapped model name
+        model_name = get_gemini_model(request.model)
         
-        model_name = model_map.get(request.model, "gemini-2.0-flash-exp")
-        model = genai.GenerativeModel(model_name)
+        # Use provided system instruction or load from file
+        system_instruction = request.system_instruction or get_system_instruction()
         
-        logger.debug("Submitting prompt to Gemini model '%s'", model_name)
-        response = model.generate_content(request.text)
+        # Create client and generate content with system instruction
+        client = genai.Client()
+        
+        logger.debug("Submitting prompt to Gemini model '%s' with system instruction", model_name)
+        response = client.models.generate_content(
+            model=model_name,
+            contents=request.text,
+            config=types.GenerateContentConfig(
+                system_instruction=system_instruction
+            )
+        )
         logger.info("Gemini response generated (%d chars)", len(response.text or ""))
 
         return JSONResponse(content={
@@ -324,6 +391,38 @@ async def health_check():
         "whisper_available": WhisperModel is not None,
         "gemini_available": genai is not None and bool(gemini_api_key)
     })
+
+
+@app.get("/api/system_instruction")
+async def get_system_instruction_endpoint():
+    """Get current system instruction."""
+    try:
+        instruction = get_system_instruction()
+        return JSONResponse(content={
+            "system_instruction": instruction
+        })
+    except Exception as e:
+        logger.exception("Failed to get system instruction")
+        raise HTTPException(status_code=500, detail=f"Failed to get system instruction: {str(e)}")
+
+
+@app.post("/api/system_instruction")
+async def save_system_instruction_endpoint(instruction: str = Form(...)):
+    """Save system instruction."""
+    try:
+        if not instruction.strip():
+            raise HTTPException(status_code=400, detail="System instruction cannot be empty")
+        
+        save_system_instruction(instruction)
+        return JSONResponse(content={
+            "status": "success",
+            "message": "System instruction saved"
+        })
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("Failed to save system instruction")
+        raise HTTPException(status_code=500, detail=f"Failed to save system instruction: {str(e)}")
 
 if __name__ == "__main__":
     import uvicorn
