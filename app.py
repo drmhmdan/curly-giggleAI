@@ -432,4 +432,25 @@ async def save_system_instruction_endpoint(instruction: str = Form(...)):
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8031, reload=True, log_level="info")
+    from pathlib import Path
+    
+    # Get absolute paths to SSL certificates
+    project_root = Path(__file__).parent
+    ssl_keyfile = project_root / "key.pem"
+    ssl_certfile = project_root / "cert.pem"
+    
+    if ssl_keyfile.exists() and ssl_certfile.exists():
+        uvicorn.run(
+            app,
+            host="0.0.0.0",
+            port=8031,
+            log_level="info",
+            ssl_keyfile=str(ssl_keyfile),
+            ssl_certfile=str(ssl_certfile)
+        )
+    else:
+        print(f"Error: SSL certificates not found!")
+        print(f"  Key: {ssl_keyfile}")
+        print(f"  Cert: {ssl_certfile}")
+        print("Generate them with: openssl req -x509 -newkey rsa:4096 -nodes -out cert.pem -keyout key.pem -days 365 -subj \"/CN=localhost\"")
+        exit(1)
