@@ -21,8 +21,16 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field, field_validator
 
 try:
-    from faster_whisper import WhisperModel
-except ImportError:
+    # Lazy import to avoid issues with PyAV on some systems
+    import sys
+    if 'faster_whisper' not in sys.modules:
+        try:
+            from faster_whisper import WhisperModel
+        except (ImportError, Exception):
+            WhisperModel = None
+    else:
+        from faster_whisper import WhisperModel
+except Exception:
     WhisperModel = None
 
 try:
@@ -37,12 +45,14 @@ logger = logging.getLogger("curly-giggleai")
 
 app = FastAPI(title="Speech Transcription & AI Response")
 
-# System instruction file path
+# System instruction file paths
 SYS_INSTRUCT_FILE = Path(__file__).parent / "sys_instruct"
+SYS_INSTRUCT_FILE_2 = Path(__file__).parent / "sys_instruct2"
 DEFAULT_SYS_INSTRUCT = "You are a helpful AI assistant."
 
-# Global session variable for system instruction (in-memory, not persisted)
+# Global session variables for system instructions (in-memory, not persisted)
 current_session_system_instruction: Optional[str] = None
+current_session_system_instruction_2: Optional[str] = None
 
 # Configure CORS
 app.add_middleware(
@@ -56,6 +66,16 @@ app.add_middleware(
 # Global models cache
 whisper_models = {}
 gemini_api_key = os.getenv("GEMINI_API_KEY", "")
+
+# Global session variable for Gemini API key (in-memory, not persisted to .env)
+current_session_gemini_api_key: Optional[str] = None
+
+def get_gemini_api_key() -> str:
+    """Get Gemini API key from current session, or from environment."""
+    global current_session_gemini_api_key
+    if current_session_gemini_api_key is not None:
+        return current_session_gemini_api_key
+    return gemini_api_key
 
 
 def infer_upload_suffix(upload: UploadFile, default: str = ".webm") -> str:
@@ -91,8 +111,23 @@ def get_system_instruction() -> str:
     return DEFAULT_SYS_INSTRUCT
 
 
+def get_system_instruction_2() -> str:
+    """Get second system instruction from current session, or file, or default."""
+    # Check if there's a session-specific instruction first
+    if current_session_system_instruction_2 is not None:
+        return current_session_system_instruction_2
+    
+    # Fall back to file
+    if SYS_INSTRUCT_FILE_2.exists():
+        try:
+            return SYS_INSTRUCT_FILE_2.read_text(encoding="utf-8").strip()
+        except Exception as e:
+            logger.warning("Failed to read system instruction file 2: %s", e)
+    return DEFAULT_SYS_INSTRUCT
+
+
 class TranscriptionRequest(BaseModel):
-    model: str = Field(default="tiny", pattern="^(tiny|large|TheChola/whisper-large-v3-turbo-german-faster-whisper)$")
+    model: str = Field(default="tiny", pattern="^(tiny|base|small|medium|large|large-v2|large-v3|large-v3-turbo|TheChola/whisper-large-v3-turbo-german-faster-whisper)$")
     language: str = Field(default="de", pattern="^(de|en|ar)$")
 
 class GeminiRequest(BaseModel):
@@ -388,8 +423,11 @@ async def generate_gemini_response(request: GeminiRequest):
         # Use provided system instruction or load from file
         system_instruction = request.system_instruction or get_system_instruction()
         
+        # Get the current Gemini API key (session or environment)
+        current_api_key = get_gemini_api_key()
+        
         # Create client with API key
-        client = genai.Client(api_key=gemini_api_key)
+        client = genai.Client(api_key=current_api_key)
         
         logger.debug("Submitting prompt to Gemini model '%s' with system instruction", model_name)
         response = client.models.generate_content(
@@ -409,6 +447,66 @@ async def generate_gemini_response(request: GeminiRequest):
     except Exception as e:
         logger.exception("Gemini API call failed")
         raise HTTPException(status_code=500, detail=f"Gemini API failed: {str(e)}")
+
+
+@app.post("/api/gemini_2")
+async def generate_gemini_response_2(request: GeminiRequest):
+    """
+    Generate AI response using Google Gemini with second system instruction.
+    
+    Args:
+        request: Contains text prompt, model name, and optional system instruction
+    
+    Returns:
+        JSON with AI-generated response
+    """
+    logger.info("Gemini 2 request received for model '%s'", request.model)
+
+    if genai is None or types is None:
+        logger.error("Gemini SDK import failed")
+        return JSONResponse(
+            status_code=500,
+            content={"error": "google-genai not installed. Install with: pip install google-genai"}
+        )
+
+    if not gemini_api_key:
+        logger.error("GEMINI_API_KEY environment variable missing")
+        return JSONResponse(
+            status_code=500,
+            content={"error": "GEMINI_API_KEY environment variable not set"}
+        )
+
+    try:
+        # Get the mapped model name
+        model_name = get_gemini_model(request.model)
+        
+        # Use provided system instruction or load second instruction from file
+        system_instruction = request.system_instruction or get_system_instruction_2()
+        
+        # Get the current Gemini API key (session or environment)
+        current_api_key = get_gemini_api_key()
+        
+        # Create client with API key
+        client = genai.Client(api_key=current_api_key)
+        
+        logger.debug("Submitting prompt to Gemini 2 model '%s' with second system instruction", model_name)
+        response = client.models.generate_content(
+            model=model_name,
+            contents=request.text,
+            config=types.GenerateContentConfig(
+                system_instruction=system_instruction
+            )
+        )
+        logger.info("Gemini 2 response generated (%d chars)", len(response.text or ""))
+
+        return JSONResponse(content={
+            "response": response.text,
+            "model": model_name
+        })
+    
+    except Exception as e:
+        logger.exception("Gemini 2 API call failed")
+        raise HTTPException(status_code=500, detail=f"Gemini 2 API failed: {str(e)}")
 
 @app.get("/api/health")
 async def health_check():
@@ -456,6 +554,89 @@ async def save_system_instruction_endpoint(instruction: str = Form(...)):
     except Exception as e:
         logger.exception("Failed to update system instruction")
         raise HTTPException(status_code=500, detail=f"Failed to update system instruction: {str(e)}")
+
+
+@app.get("/api/system_instruction_2")
+async def get_system_instruction_2_endpoint():
+    """Get current second system instruction (from session)."""
+    try:
+        instruction = get_system_instruction_2()
+        return JSONResponse(content={
+            "system_instruction": instruction
+        })
+    except Exception as e:
+        logger.exception("Failed to get second system instruction")
+        raise HTTPException(status_code=500, detail=f"Failed to get second system instruction: {str(e)}")
+
+
+@app.post("/api/system_instruction_2")
+async def save_system_instruction_2_endpoint(instruction: str = Form(...)):
+    """Save second system instruction for current session (in-memory only, not persisted to file)."""
+    global current_session_system_instruction_2
+    
+    try:
+        if not instruction.strip():
+            raise HTTPException(status_code=400, detail="System instruction cannot be empty")
+        
+        # Store in session (global variable) - NOT to file
+        current_session_system_instruction_2 = instruction.strip()
+        logger.info("Second system instruction updated for current session")
+        
+        return JSONResponse(content={
+            "status": "success",
+            "message": "Second system instruction updated for this session"
+        })
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("Failed to update second system instruction")
+        raise HTTPException(status_code=500, detail=f"Failed to update second system instruction: {str(e)}")
+
+
+@app.get("/api/gemini_api_key")
+async def get_gemini_api_key_endpoint():
+    """Get current Gemini API key (plain text)."""
+    try:
+        current_key = get_gemini_api_key()
+        if current_key:
+            return JSONResponse(content={
+                "api_key": current_key,
+                "has_key": True,
+                "key_length": len(current_key)
+            })
+        else:
+            return JSONResponse(content={
+                "api_key": None,
+                "has_key": False,
+                "key_length": 0
+            })
+    except Exception as e:
+        logger.exception("Failed to get Gemini API key")
+        raise HTTPException(status_code=500, detail=f"Failed to get Gemini API key: {str(e)}")
+
+
+@app.post("/api/gemini_api_key")
+async def set_gemini_api_key_endpoint(api_key: str = Form(...)):
+    """Set Gemini API key for current session (in-memory only, not persisted to .env)."""
+    global current_session_gemini_api_key
+    
+    try:
+        if not api_key.strip():
+            raise HTTPException(status_code=400, detail="API key cannot be empty")
+        
+        # Store in session (global variable) - NOT to .env file
+        current_session_gemini_api_key = api_key.strip()
+        logger.info("Gemini API key updated for current session")
+        
+        return JSONResponse(content={
+            "status": "success",
+            "message": "Gemini API key updated for this session"
+        })
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("Failed to update Gemini API key")
+        raise HTTPException(status_code=500, detail=f"Failed to update Gemini API key: {str(e)}")
 
 if __name__ == "__main__":
     import uvicorn

@@ -440,9 +440,11 @@
                 <div class="config-section">
                     <label for="whisper-model">Whisper Model</label>
                     <select id="whisper-model">
-                        <option value="TheChola/whisper-large-v3-turbo-german-faster-whisper" selected>TheChola/whisper-large-v3-turbo-german-faster-whisper</option>
-                        <option value="tiny">tiny</option>
+                        <option value="TheChola/whisper-large-v3-turbo-german-faster-whisper" selected>TheChola (German v3 Turbo)</option>
+                        <option value="large-v3">large-v3</option>
+                        <option value="large-v3-turbo">large-v3-turbo (Fast)</option>
                         <option value="large">large</option>
+                        <option value="tiny">tiny</option>
                     </select>
                 </div>
 
@@ -479,6 +481,18 @@
                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"></path>
                         </svg>
                         Edit System Instruction
+                    </button>
+                    <button id="edit-gemini-api-key-btn" class="button button-primary" style="margin-top: 12px; width: 100%;">
+                        <svg class="icon" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 7a2 2 0 012 2m4 0a6 6 0 01-7.743 5.743L11 17H9v2H7v2H4a1 1 0 01-1-1v-2.586a1 1 0 01.293-.707l5.964-5.964A6 6 0 1121 9z"></path>
+                        </svg>
+                        Edit Gemini API Key
+                    </button>
+                    <button id="edit-system-instruction-2-btn" class="button button-primary" style="margin-top: 12px; width: 100%;">
+                        <svg class="icon" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"></path>
+                        </svg>
+                        Edit System Instruction 2
                     </button>
                 </div>
             </div>
@@ -533,6 +547,12 @@
                         </svg>
                         Send to Gemini
                     </button>
+                    <button id="send-to-gemini-2-btn" class="button button-primary" style="flex: 1;" disabled>
+                        <svg class="icon" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"></path>
+                        </svg>
+                        Send to Gemini (Instr. 2)
+                    </button>
                     <button id="reset-ui-btn" class="button button-danger" style="flex: 1;">
                         <svg class="icon" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"></path>
@@ -579,8 +599,41 @@
         </div>
     </div>
 
+    <div id="gemini-api-key-modal" class="modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2>Gemini API Key</h2>
+                <button class="modal-close" id="gemini-modal-close-btn" type="button">×</button>
+            </div>
+            <label for="gemini-api-key-input">Enter your Google Gemini API Key:</label>
+            <input type="text" id="gemini-api-key-input" style="margin: 12px 0;" placeholder="sk-...">
+            <div style="margin: 12px 0; padding: 12px; background: var(--background); border-radius: 8px;">
+                <p style="font-size: 0.875rem; color: var(--text-secondary); margin: 0;">Status: <span id="gemini-key-status">Checking...</span></p>
+            </div>
+            <div class="modal-footer">
+                <button id="gemini-modal-cancel-btn" class="button button-danger">Cancel</button>
+                <button id="gemini-modal-save-btn" class="button button-primary">Save</button>
+            </div>
+        </div>
+    </div>
+
+    <div id="system-instruction-2-modal" class="modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2>System Instruction 2</h2>
+                <button class="modal-close" id="modal-2-close-btn" type="button">×</button>
+            </div>
+            <label for="system-instruction-2-textarea">Edit the second system instruction that guides the AI behavior:</label>
+            <textarea id="system-instruction-2-textarea" style="min-height: 200px; margin: 12px 0;" placeholder="Enter system instruction 2..."></textarea>
+            <div class="modal-footer">
+                <button id="modal-2-cancel-btn" class="button button-danger">Cancel</button>
+                <button id="modal-2-save-btn" class="button button-primary">Save</button>
+            </div>
+        </div>
+    </div>
+
     <script>
-        const SEGMENT_LENGTH_SECONDS = 8;
+        const SEGMENT_LENGTH_SECONDS = 30;
         const SEGMENT_OVERLAP_SECONDS = 0;
         const SEGMENT_STEP_SECONDS = SEGMENT_LENGTH_SECONDS;
         const PCM_BUFFER_PAD_SECONDS = SEGMENT_LENGTH_SECONDS + 1;
@@ -615,14 +668,28 @@
         const autoTranscribeCheckbox = document.getElementById('auto-transcribe');
         const autoSendGeminiCheckbox = document.getElementById('auto-send-gemini');
         const sendToGeminiBtn = document.getElementById('send-to-gemini-btn');
+        const sendToGemini2Btn = document.getElementById('send-to-gemini-2-btn');
         const resetUiBtn = document.getElementById('reset-ui-btn');
         const editSystemInstructionBtn = document.getElementById('edit-system-instruction-btn');
+        const editSystemInstruction2Btn = document.getElementById('edit-system-instruction-2-btn');
         const systemInstructionModal = document.getElementById('system-instruction-modal');
+        const systemInstruction2Modal = document.getElementById('system-instruction-2-modal');
         const systemInstructionTextarea = document.getElementById('system-instruction-textarea');
+        const systemInstruction2Textarea = document.getElementById('system-instruction-2-textarea');
         const modalSaveBtn = document.getElementById('modal-save-btn');
         const modalCancelBtn = document.getElementById('modal-cancel-btn');
         const modalCloseBtn = document.getElementById('modal-close-btn');
+        const modal2SaveBtn = document.getElementById('modal-2-save-btn');
+        const modal2CancelBtn = document.getElementById('modal-2-cancel-btn');
+        const modal2CloseBtn = document.getElementById('modal-2-close-btn');
     const copyGeminiBtn = document.getElementById('copy-gemini-btn');
+        const editGeminiApiKeyBtn = document.getElementById('edit-gemini-api-key-btn');
+        const geminiApiKeyModal = document.getElementById('gemini-api-key-modal');
+        const geminiApiKeyInput = document.getElementById('gemini-api-key-input');
+        const geminiKeyStatus = document.getElementById('gemini-key-status');
+        const geminiModalSaveBtn = document.getElementById('gemini-modal-save-btn');
+        const geminiModalCancelBtn = document.getElementById('gemini-modal-cancel-btn');
+        const geminiModalCloseBtn = document.getElementById('gemini-modal-close-btn');
 
         function showToast(message, type = 'info') {
             const toast = document.getElementById('toast');
@@ -1176,6 +1243,7 @@
 
         function updateSendToGeminiButton() {
             sendToGeminiBtn.disabled = !transcriptionText.value.trim();
+            sendToGemini2Btn.disabled = !transcriptionText.value.trim();
         }
 
         function openSystemInstructionModal() {
@@ -1234,18 +1302,191 @@
             }
         }
 
+        function openGeminiApiKeyModal() {
+            geminiApiKeyModal.classList.add('show');
+            loadGeminiApiKey();
+        }
+
+        function closeGeminiApiKeyModal() {
+            geminiApiKeyModal.classList.remove('show');
+            geminiApiKeyInput.value = '';
+        }
+
+        async function loadGeminiApiKey() {
+            try {
+                const response = await fetch('/api/gemini_api_key');
+                if (response.ok) {
+                    const data = await response.json();
+                    if (data.has_key) {
+                        geminiKeyStatus.textContent = `✓ API Key configured (${data.key_length} chars)`;
+                        geminiKeyStatus.style.color = 'var(--success-color)';
+                        geminiApiKeyInput.value = data.api_key;
+                    } else {
+                        geminiKeyStatus.textContent = '✗ No API Key set';
+                        geminiKeyStatus.style.color = 'var(--danger-color)';
+                        geminiApiKeyInput.value = '';
+                    }
+                } else {
+                    geminiKeyStatus.textContent = 'Error loading status';
+                }
+            } catch (error) {
+                console.error('Error loading Gemini API key status:', error);
+                geminiKeyStatus.textContent = 'Error loading status';
+            }
+        }
+
+        async function saveGeminiApiKey() {
+            const apiKey = geminiApiKeyInput.value.trim();
+            if (!apiKey) {
+                showToast('API key cannot be empty', 'error');
+                return;
+            }
+
+            try {
+                geminiModalSaveBtn.disabled = true;
+                const formData = new FormData();
+                formData.append('api_key', apiKey);
+
+                const response = await fetch('/api/gemini_api_key', {
+                    method: 'POST',
+                    body: formData
+                });
+
+                if (response.ok) {
+                    showToast('Gemini API key saved for this session', 'success');
+                    closeGeminiApiKeyModal();
+                } else {
+                    showToast('Failed to save Gemini API key', 'error');
+                }
+            } catch (error) {
+                console.error('Error saving Gemini API key:', error);
+                showToast('Error saving Gemini API key: ' + error.message, 'error');
+            } finally {
+                geminiModalSaveBtn.disabled = false;
+            }
+        }
+
+        function openSystemInstruction2Modal() {
+            systemInstruction2Modal.classList.add('show');
+            loadSystemInstruction2();
+        }
+
+        function closeSystemInstruction2Modal() {
+            systemInstruction2Modal.classList.remove('show');
+        }
+
+        async function loadSystemInstruction2() {
+            try {
+                const response = await fetch('/api/system_instruction_2');
+                if (response.ok) {
+                    const data = await response.json();
+                    systemInstruction2Textarea.value = data.system_instruction;
+                } else {
+                    showToast('Failed to load system instruction 2', 'error');
+                }
+            } catch (error) {
+                console.error('Error loading system instruction 2:', error);
+                showToast('Error loading system instruction 2: ' + error.message, 'error');
+            }
+        }
+
+        async function saveSystemInstruction2() {
+            const instruction = systemInstruction2Textarea.value.trim();
+            if (!instruction) {
+                showToast('System instruction 2 cannot be empty', 'error');
+                return;
+            }
+
+            try {
+                modal2SaveBtn.disabled = true;
+                const formData = new FormData();
+                formData.append('instruction', instruction);
+
+                const response = await fetch('/api/system_instruction_2', {
+                    method: 'POST',
+                    body: formData
+                });
+
+                if (response.ok) {
+                    showToast('System instruction 2 saved', 'success');
+                    closeSystemInstruction2Modal();
+                } else {
+                    showToast('Failed to save system instruction 2', 'error');
+                }
+            } catch (error) {
+                console.error('Error saving system instruction 2:', error);
+                showToast('Error saving system instruction 2: ' + error.message, 'error');
+            } finally {
+                modal2SaveBtn.disabled = false;
+            }
+        }
+
+        async function sendTranscriptionToGemini2() {
+            const transcription = transcriptionText.value.trim();
+            if (!transcription) {
+                showToast('No transcription to send', 'error');
+                return;
+            }
+
+            updateStatus('thinking', 'Sending to Gemini (Instr. 2)...');
+            sendToGemini2Btn.disabled = true;
+
+            try {
+                const response = await fetch('/api/gemini_2', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        text: transcription,
+                        model: geminiModelSelect.value
+                    })
+                });
+
+                if (response.ok) {
+                    const data = await response.json();
+                    geminiResponseText.value = data.response;
+                    updateCopyGeminiButton();
+                    showToast('Response generated with Instruction 2', 'success');
+                    updateStatus('ready', 'Response ready');
+                } else if (response.status === 400) {
+                    const errorData = await response.json();
+                    showToast('Error: ' + errorData.detail, 'error');
+                    updateStatus('error', 'Error sending to Gemini (Instr. 2)');
+                } else {
+                    showToast('Failed to generate response', 'error');
+                    updateStatus('error', 'Failed to generate response');
+                }
+            } catch (error) {
+                console.error('Error sending to Gemini (Instr. 2):', error);
+                showToast('Error: ' + error.message, 'error');
+                updateStatus('error', 'Error sending to Gemini');
+            } finally {
+                sendToGemini2Btn.disabled = false;
+            }
+        }
+
         startBtn.addEventListener('click', startRecording);
         stopBtn.addEventListener('click', stopRecording);
         sendToGeminiBtn.addEventListener('click', sendTranscriptionToGemini);
+        sendToGemini2Btn.addEventListener('click', sendTranscriptionToGemini2);
         resetUiBtn.addEventListener('click', resetUI);
         whisperModelSelect.addEventListener('change', preloadWhisperModel);
         transcriptionText.addEventListener('input', updateSendToGeminiButton);
     geminiResponseText.addEventListener('input', updateCopyGeminiButton);
         editSystemInstructionBtn.addEventListener('click', openSystemInstructionModal);
+        editSystemInstruction2Btn.addEventListener('click', openSystemInstruction2Modal);
         modalSaveBtn.addEventListener('click', saveSystemInstruction);
         modalCancelBtn.addEventListener('click', closeSystemInstructionModal);
         modalCloseBtn.addEventListener('click', closeSystemInstructionModal);
+        modal2SaveBtn.addEventListener('click', saveSystemInstruction2);
+        modal2CancelBtn.addEventListener('click', closeSystemInstruction2Modal);
+        modal2CloseBtn.addEventListener('click', closeSystemInstruction2Modal);
     copyGeminiBtn.addEventListener('click', copyGeminiResponse);
+        editGeminiApiKeyBtn.addEventListener('click', openGeminiApiKeyModal);
+        geminiModalSaveBtn.addEventListener('click', saveGeminiApiKey);
+        geminiModalCancelBtn.addEventListener('click', closeGeminiApiKeyModal);
+        geminiModalCloseBtn.addEventListener('click', closeGeminiApiKeyModal);
 
         if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
             showToast('Your browser does not support audio recording', 'error');
@@ -1256,6 +1497,18 @@
         systemInstructionModal.addEventListener('click', (e) => {
             if (e.target === systemInstructionModal) {
                 closeSystemInstructionModal();
+            }
+        });
+
+        systemInstruction2Modal.addEventListener('click', (e) => {
+            if (e.target === systemInstruction2Modal) {
+                closeSystemInstruction2Modal();
+            }
+        });
+
+        geminiApiKeyModal.addEventListener('click', (e) => {
+            if (e.target === geminiApiKeyModal) {
+                closeGeminiApiKeyModal();
             }
         });
 
